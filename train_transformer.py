@@ -8,7 +8,34 @@ from torch.utils.data import DataLoader, Dataset
 import math
 import os
 
-# --- Model Architecture ---
+# --- Reversible Instance Normalization (RevIN) ---
+class RevIN(nn.Module):
+    def __init__(self, num_features, eps=1e-5, affine=True):
+        """
+        Kim et al. (2021) - Normalizes instance statistics to handle distribution shift.
+        """
+        super(RevIN, self).__init__()
+        self.num_features = num_features
+        self.eps = eps
+        self.affine = affine
+        if self.affine:
+            self.affine_weight = nn.Parameter(torch.ones(num_features))
+            self.affine_bias = nn.Parameter(torch.zeros(num_features))
+
+    def forward(self, x, mode):
+        if mode == 'norm':
+            self.mean = torch.mean(x, dim=1, keepdim=True).detach()
+            self.stdev = torch.sqrt(torch.var(x, dim=1, keepdim=True, unbiased=False) + self.eps).detach()
+            x = (x - self.mean) / self.stdev
+            if self.affine:
+                x = x * self.affine_weight + self.affine_bias
+        elif mode == 'denorm':
+            if self.affine:
+                x = (x - self.affine_bias) / (self.affine_weight + self.eps)
+            x = x * self.stdev + self.mean
+        return x
+
+# --- PatchTST Style Architecture ---
 class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=500):
         super(PositionalEncoding, self).__init__()
@@ -17,95 +44,100 @@ class PositionalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        self.register_buffer('pe', pe.unsqueeze(0))
 
     def forward(self, x):
         return x + self.pe[:, :x.size(1), :]
 
-class GeneralPriceTransformer(nn.Module):
-    def __init__(self, input_dim, d_model=64, nhead=4, num_layers=3, dropout=0.1):
-        super(GeneralPriceTransformer, self).__init__()
-        self.embedding = nn.Linear(input_dim, d_model)
+class ResearchPriceTransformer(nn.Module):
+    def __init__(self, input_dim, lookback, patch_size=8, d_model=128, nhead=8, num_layers=4, dropout=0.1):
+        """
+        PatchTST-inspired Transformer using RevIN and local patching.
+        """
+        super(ResearchPriceTransformer, self).__init__()
+        self.patch_size = patch_size
+        self.num_patches = lookback // patch_size
+        
+        # SOTA: RevIN for distribution shift
+        self.revin = RevIN(num_features=input_dim)
+        
+        # SOTA: Patch Embedding (local temporal semantics)
+        self.patch_embedding = nn.Linear(input_dim * patch_size, d_model)
+        
         self.pos_encoder = PositionalEncoding(d_model)
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, 
             dropout=dropout, activation='gelu', batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Decoder for target (t+1)
         self.decoder = nn.Sequential(
-            nn.Linear(d_model, 32),
+            nn.Linear(d_model, 64),
             nn.GELU(),
-            nn.Linear(32, 1)
+            nn.Linear(64, 1) # Predicting Close price
         )
 
     def forward(self, x):
-        x = self.embedding(x)
+        # 1. Normalize (RevIN)
+        x = self.revin(x, 'norm') # [Batch, Seq, Features]
+        
+        # 2. Patching
+        # Reshape to [Batch, Num_Patches, Patch_Size * Features]
+        batch_size = x.size(0)
+        x = x.unfold(1, self.patch_size, self.patch_size) # [Batch, Num_Patches, Features, Patch_Size]
+        x = x.transpose(2, 3).reshape(batch_size, self.num_patches, -1)
+        
+        # 3. Embedding + Transformer
+        x = self.patch_embedding(x)
         x = self.pos_encoder(x)
         x = self.transformer(x)
-        return self.decoder(x[:, -1, :])
+        
+        # 4. Decode
+        out = self.decoder(x[:, -1, :]) # Use the last patch representation
+        
+        # 5. Denormalize target (using RevIN stats from the 'Close' feature)
+        # Note: Denorm expects same shape as original input or specific stats.
+        # We simplify here by manually denormalizing the target Close price.
+        # Close is index 3 in OHLCV
+        mean_close = self.revin.mean[:, :, 3]
+        std_close = self.revin.stdev[:, :, 3]
+        out = out * std_close + mean_close
+        
+        return out
 
 # --- Data Handling ---
 class StockDataset(Dataset):
-    def __init__(self, ticker, lookback=30, period="2y", interval="1d"):
-        print(f"Fetching data for {ticker}...")
+    def __init__(self, ticker, lookback=64, period="2y", interval="1d"):
+        # lookback must be divisible by patch_size (8)
+        self.lookback = lookback
         df = yf.download(ticker, period=period, interval=interval)
         if df.empty:
-            raise ValueError(f"No data found for {ticker}")
+            raise ValueError(f"No data for {ticker}")
         
-        # Features: Open, High, Low, Close, Volume
-        data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values
-        
-        # Normalize (Min-Max per window is better for generalization)
-        self.raw_data = data
-        self.lookback = lookback
-        self.X, self.y = [], []
-        
-        for i in range(len(data) - lookback):
-            window = data[i:i+lookback].copy()
-            target = data[i+lookback, 3] # Close price
-            
-            # Simple normalization: divide by the first Close in the window
-            baseline = window[0, 3]
-            window_norm = window / baseline
-            target_norm = target / baseline
-            
-            self.X.append(window_norm)
-            self.y.append(target_norm)
-            
-        self.X = torch.tensor(np.array(self.X), dtype=torch.float32)
-        self.y = torch.tensor(np.array(self.y), dtype=torch.float32).view(-1, 1)
+        self.data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
 
     def __len__(self):
-        return len(self.X)
+        return len(self.data) - self.lookback
 
     def __getitem__(self, idx):
-        return self.X[idx], self.y[idx]
+        x = self.data[idx:idx+self.lookback]
+        y = self.data[idx+self.lookback, 3] # Close price
+        return torch.tensor(x), torch.tensor(y).view(-1)
 
-def train_generalized_model(ticker="AAPL", epochs=20):
-    lookback = 30
-    try:
-        dataset = StockDataset(ticker, lookback=lookback)
-    except Exception as e:
-        print(f"Error: {e}")
-        return
-
-    train_size = int(0.8 * len(dataset))
-    test_size = len(dataset) - train_size
-    train_ds, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+def train_model(ticker="BTC-USD", lookback=64, epochs=50):
+    dataset = StockDataset(ticker, lookback=lookback)
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
-    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=32)
-
-    model = GeneralPriceTransformer(input_dim=5)
+    model = ResearchPriceTransformer(input_dim=5, lookback=lookback)
     criterion = nn.HuberLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
-    print(f"Starting training for {ticker}...")
+    print(f"Training SOTA Research Transformer on {ticker}...")
     for epoch in range(epochs):
         model.train()
         total_loss = 0
-        for bx, by in train_loader:
+        for bx, by in loader:
             optimizer.zero_grad()
             pred = model(bx)
             loss = criterion(pred, by)
@@ -113,22 +145,11 @@ def train_generalized_model(ticker="AAPL", epochs=20):
             optimizer.step()
             total_loss += loss.item()
         
-        model.eval()
-        val_loss = 0
-        with torch.no_grad():
-            for bx, by in test_loader:
-                v_pred = model(bx)
-                val_loss += criterion(v_pred, by).item()
-        
-        print(f"Epoch {epoch+1:02d} | Train Loss: {total_loss/len(train_loader):.6f} | Val Loss: {val_loss/len(test_loader):.6f}")
-
-    torch.save(model.state_dict(), f"{ticker}_transformer.pth")
-    print(f"Model saved to {ticker}_transformer.pth")
+        if (epoch+1) % 10 == 0:
+            print(f"Epoch {epoch+1:02d} | Loss: {total_loss/len(loader):.6f}")
+    
+    torch.save(model.state_dict(), "research_transformer.pth")
+    print("Model saved to research_transformer.pth")
 
 if __name__ == "__main__":
-    import sys
-    ticker_to_train = "GC=F" # Default Gold Futures
-    if len(sys.argv) > 1:
-        ticker_to_train = sys.argv[1]
-    
-    train_generalized_model(ticker_to_train)
+    train_model()

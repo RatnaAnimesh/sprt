@@ -3,13 +3,13 @@ import torch.nn as nn
 import numpy as np
 import yfinance as yf
 import pandas as pd
-from train_transformer import GeneralPriceTransformer, StockDataset
+from train_transformer import ResearchPriceTransformer, StockDataset
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 
-def run_evaluation(ticker="BTC-USD", lookback=30):
-    print(f"--- Hard Asset Evaluation: {ticker} ---")
+def run_evaluation(ticker="BTC-USD", lookback=64):
+    print(f"--- SOTA Research Evaluation: {ticker} ---")
     
     # 1. Fetch data
     end_date = datetime.now()
@@ -21,7 +21,7 @@ def run_evaluation(ticker="BTC-USD", lookback=30):
         return
 
     # 2. Prepare Data
-    data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values
+    data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
     
     # Split into Train (80%) and Test (20%) - Sequential split for time series
     split_idx = int(len(data) * 0.8)
@@ -32,21 +32,18 @@ def run_evaluation(ticker="BTC-USD", lookback=30):
     print(f"Training on historical data ({len(train_data)} points)...")
     X_train, y_train = [], []
     for i in range(len(train_data) - lookback):
-        window = train_data[i:i+lookback].copy()
-        target = train_data[i+lookback, 3]
-        baseline = window[0, 3]
-        X_train.append(window / baseline)
-        y_train.append(target / baseline)
+        X_train.append(train_data[i:i+lookback])
+        y_train.append(train_data[i+lookback, 3])
     
     X_train = torch.tensor(np.array(X_train), dtype=torch.float32)
     y_train = torch.tensor(np.array(y_train), dtype=torch.float32).view(-1, 1)
     
-    model = GeneralPriceTransformer(input_dim=5)
+    model = ResearchPriceTransformer(input_dim=5, lookback=lookback)
     criterion = nn.HuberLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=0.001)
+    optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
-    # Mini training loop
-    for epoch in range(30):
+    # Training loop
+    for epoch in range(50):
         model.train()
         optimizer.zero_grad()
         pred = model(X_train)
@@ -57,30 +54,22 @@ def run_evaluation(ticker="BTC-USD", lookback=30):
             print(f"Epoch {epoch+1:02d} | Loss: {loss.item():.6f}")
 
     # --- Testing Phase (Forward Test) ---
-    print(f"\nForward testing on out-of-sample data ({len(test_data)-lookback} points)...")
+    print(f"\nForward testing on out-of-sample data ({len(data) - split_idx} points)...")
     model.eval()
     X_test, y_test_actual, dates = [], [], []
-    baselines = []
     
     test_dates = df.index[split_idx:]
     
     for i in range(len(test_data) - lookback):
-        window = test_data[i:i+lookback].copy()
-        actual = test_data[i+lookback, 3]
-        baseline = window[0, 3]
-        
-        X_test.append(window / baseline)
-        y_test_actual.append(actual)
-        baselines.append(baseline)
+        X_test.append(test_data[i:i+lookback])
+        y_test_actual.append(test_data[i+lookback, 3])
         dates.append(test_dates[i])
         
     X_test = torch.tensor(np.array(X_test), dtype=torch.float32)
     
     with torch.no_grad():
-        preds_norm = model(X_test).numpy().flatten()
+        preds = model(X_test).numpy().flatten()
     
-    # Denormalize
-    preds = preds_norm * np.array(baselines)
     y_test_actual = np.array(y_test_actual)
     
     # --- Metrics ---
