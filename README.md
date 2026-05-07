@@ -17,14 +17,11 @@ python train_transformer.py AAPL
 Evaluation on out-of-sample data for high-volatility assets.
 
 ### Bitcoin (BTC-USD)
-- Directional Accuracy: 51.70%
-- Strategy Cumulative Return: 1.12x
+- Directional Accuracy: 50.34%
+- Strategy Cumulative Return: 1.10x
 - Buy & Hold Return: 0.90x
 
-### GameStop (GME)
-- Directional Accuracy: 53.47%
-- Strategy Cumulative Return: 1.13x
-- Buy & Hold Return: 1.14x
+![Bitcoin Performance](BTC-USD_performance.png)
 
 ## Data
 The model downloads historical OHLCV data using the yfinance library.
