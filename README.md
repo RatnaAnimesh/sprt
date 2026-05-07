@@ -13,5 +13,18 @@ Run the training script with a yfinance ticker (e.g., AAPL, GC=F for Gold, BTC-U
 python train_transformer.py AAPL
 ```
 
+## Backtesting Results
+Evaluation on out-of-sample data for high-volatility assets.
+
+### Bitcoin (BTC-USD)
+- Directional Accuracy: 51.70%
+- Strategy Cumulative Return: 1.12x
+- Buy & Hold Return: 0.90x
+
+### GameStop (GME)
+- Directional Accuracy: 53.47%
+- Strategy Cumulative Return: 1.13x
+- Buy & Hold Return: 1.14x
+
 ## Data
-The model expects market data in the format provided in the tutorial round files.
+The model downloads historical OHLCV data using the yfinance library.
