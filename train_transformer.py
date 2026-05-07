@@ -1,149 +1,134 @@
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import csv
 import numpy as np
+import yfinance as yf
+import pandas as pd
+from torch.utils.data import DataLoader, Dataset
+import math
 import os
 
-# --- Kalman Filter (from train_nn.py) ---
-class KalmanFilter:
-    def __init__(self, Q=0.01, R=0.25):
-        self.Q, self.R = Q, R
-        self.x, self.P = None, 1.0
-
-    def update(self, z):
-        if self.x is None: self.x = z; return self.x, self.P
-        self.P += self.Q
-        K = self.P / (self.P + self.R)
-        self.x += K * (z - self.x)
-        self.P = (1 - K) * self.P
-        return self.x, self.P
-
-# --- Transformer Model Architecture ---
-class FinancialTransformer(nn.Module):
-    def __init__(self, input_dim, d_model=32, nhead=4, num_layers=2, dropout=0.1):
-        super(FinancialTransformer, self).__init__()
-        self.embedding = nn.Linear(input_dim, d_model)
-        self.pos_encoder = nn.Parameter(torch.zeros(1, 100, d_model)) # Max sequence length of 100
-        
-        encoder_layers = nn.TransformerEncoderLayer(d_model, nhead, dim_feedforward=64, dropout=dropout, batch_first=True)
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layers, num_layers)
-        
-        self.decoder = nn.Linear(d_model, 1) # Predict normalized mid-price change
+# --- Model Architecture ---
+class PositionalEncoding(nn.Module):
+    def __init__(self, d_model, max_len=500):
+        super(PositionalEncoding, self).__init__()
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        pe = pe.unsqueeze(0)
+        self.register_buffer('pe', pe)
 
     def forward(self, x):
-        # x: [Batch, SeqLen, InputDim]
-        x = self.embedding(x) # [Batch, SeqLen, d_model]
-        x = x + self.pos_encoder[:, :x.size(1), :]
-        
-        output = self.transformer_encoder(x)
-        # Take the final step representation for the prediction
-        last_step = output[:, -1, :]
-        return self.decoder(last_step)
+        return x + self.pe[:, :x.size(1), :]
 
-# --- Data Loading (Sequential for Transformer) ---
-def load_sequential_data(files, lookback=30):
-    X, y = [], []
-    for file in files:
-        rows = []
-        with open(file, 'r') as f:
-            reader = csv.DictReader(f, delimiter=';')
-            for row in reader:
-                if row['product'] == 'TOMATOES':
-                    rows.append(row)
-        
-        kf = KalmanFilter()
-        smooth_prices = []
-        for r in rows:
-            sx, _ = kf.update(float(r['mid_price']))
-            smooth_prices.append(sx)
-            
-        feature_matrix = []
-        for i in range(len(rows)):
-            row = rows[i]
-            mid = smooth_prices[i]
-            bp1, bv1 = float(row['bid_price_1']), float(row['bid_volume_1'])
-            ap1, av1 = float(row['ask_price_1']), float(row['ask_volume_1'])
-            
-            # Feature normalization
-            obi = (bv1 - av1) / (bv1 + av1) if (bv1 + av1) > 0 else 0.0
-            velocity = (mid - smooth_prices[i-1]) if i > 0 else 0.0
-            spread = ap1 - bp1
-            
-            # [normalized_price, velocity, volume_imb, spread]
-            feat = [
-                (mid - 5000.0) / 10.0,
-                velocity,
-                obi,
-                spread / 10.0,
-                bv1 / 100.0,
-                av1 / 100.0
-            ]
-            feature_matrix.append(feat)
+class GeneralPriceTransformer(nn.Module):
+    def __init__(self, input_dim, d_model=64, nhead=4, num_layers=3, dropout=0.1):
+        super(GeneralPriceTransformer, self).__init__()
+        self.embedding = nn.Linear(input_dim, d_model)
+        self.pos_encoder = PositionalEncoding(d_model)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model, nhead=nhead, dim_feedforward=d_model*4, 
+            dropout=dropout, activation='gelu', batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.decoder = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.GELU(),
+            nn.Linear(32, 1)
+        )
 
-        # Create overlapping windows
-        for i in range(lookback, len(feature_matrix) - 1):
-            window = feature_matrix[i-lookback:i]
-            target = feature_matrix[i+1][0] # Goal: Predict next normalized price
-            X.append(window)
-            y.append(target)
+    def forward(self, x):
+        x = self.embedding(x)
+        x = self.pos_encoder(x)
+        x = self.transformer(x)
+        return self.decoder(x[:, -1, :])
+
+# --- Data Handling ---
+class StockDataset(Dataset):
+    def __init__(self, ticker, lookback=30, period="2y", interval="1d"):
+        print(f"Fetching data for {ticker}...")
+        df = yf.download(ticker, period=period, interval=interval)
+        if df.empty:
+            raise ValueError(f"No data found for {ticker}")
+        
+        # Features: Open, High, Low, Close, Volume
+        data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values
+        
+        # Normalize (Min-Max per window is better for generalization)
+        self.raw_data = data
+        self.lookback = lookback
+        self.X, self.y = [], []
+        
+        for i in range(len(data) - lookback):
+            window = data[i:i+lookback].copy()
+            target = data[i+lookback, 3] # Close price
             
-    return torch.tensor(X, dtype=torch.float32), torch.tensor(y, dtype=torch.float32).view(-1, 1)
+            # Simple normalization: divide by the first Close in the window
+            baseline = window[0, 3]
+            window_norm = window / baseline
+            target_norm = target / baseline
+            
+            self.X.append(window_norm)
+            self.y.append(target_norm)
+            
+        self.X = torch.tensor(np.array(self.X), dtype=torch.float32)
+        self.y = torch.tensor(np.array(self.y), dtype=torch.float32).view(-1, 1)
+
+    def __len__(self):
+        return len(self.X)
+
+    def __getitem__(self, idx):
+        return self.X[idx], self.y[idx]
+
+def train_generalized_model(ticker="AAPL", epochs=20):
+    lookback = 30
+    try:
+        dataset = StockDataset(ticker, lookback=lookback)
+    except Exception as e:
+        print(f"Error: {e}")
+        return
+
+    train_size = int(0.8 * len(dataset))
+    test_size = len(dataset) - train_size
+    train_ds, test_dataset = torch.utils.data.random_split(dataset, [train_size, test_size])
+    
+    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=32)
+
+    model = GeneralPriceTransformer(input_dim=5)
+    criterion = nn.HuberLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=0.001, weight_decay=1e-4)
+    
+    print(f"Starting training for {ticker}...")
+    for epoch in range(epochs):
+        model.train()
+        total_loss = 0
+        for bx, by in train_loader:
+            optimizer.zero_grad()
+            pred = model(bx)
+            loss = criterion(pred, by)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        
+        model.eval()
+        val_loss = 0
+        with torch.no_grad():
+            for bx, by in test_loader:
+                v_pred = model(bx)
+                val_loss += criterion(v_pred, by).item()
+        
+        print(f"Epoch {epoch+1:02d} | Train Loss: {total_loss/len(train_loader):.6f} | Val Loss: {val_loss/len(test_loader):.6f}")
+
+    torch.save(model.state_dict(), f"{ticker}_transformer.pth")
+    print(f"Model saved to {ticker}_transformer.pth")
 
 if __name__ == "__main__":
-    lookback = 30
-    print(f"--- Temporal Transformer Implementation ---")
-    data_files = [
-        "/Users/ashishmishra/imc-prosperity/TUTORIAL_ROUND_1/prices_round_0_day_-1.csv",
-        "/Users/ashishmishra/imc-prosperity/TUTORIAL_ROUND_1/prices_round_0_day_-2.csv"
-    ]
+    import sys
+    ticker_to_train = "GC=F" # Default Gold Futures
+    if len(sys.argv) > 1:
+        ticker_to_train = sys.argv[1]
     
-    if not all(os.path.exists(f) for f in data_files):
-        print("Error: CSV files not found. Ensure paths are correct.")
-    else:
-        X, y = load_sequential_data(data_files, lookback=lookback)
-        print(f"Loaded {len(X)} sequences of length {lookback}.")
-
-        # Split data (simpler than scikit-learn to keep dependencies low)
-        train_size = int(0.8 * len(X))
-        X_train, X_test = X[:train_size], X[train_size:]
-        y_train, y_test = y[:train_size], y[train_size:]
-
-        # Initialize Model
-        model = FinancialTransformer(input_dim=6)
-        criterion = nn.MSELoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
-
-        # Training Loop
-        epochs = 10
-        batch_size = 64
-        print(f"Starting training for {epochs} epochs...")
-        
-        for epoch in range(epochs):
-            model.train()
-            permutation = torch.randperm(X_train.size()[0])
-            epoch_loss = 0
-            
-            for i in range(0, X_train.size()[0], batch_size):
-                optimizer.zero_grad()
-                indices = permutation[i:i+batch_size]
-                batch_x, batch_y = X_train[indices], y_train[indices]
-                
-                outputs = model(batch_x)
-                loss = criterion(outputs, batch_y)
-                loss.backward()
-                optimizer.step()
-                epoch_loss += loss.item()
-            
-            # Validation
-            model.eval()
-            with torch.no_grad():
-                val_preds = model(X_test)
-                val_loss = criterion(val_preds, y_test)
-                
-            print(f"Epoch [{epoch+1}/{epochs}], Train Loss: {epoch_loss/(len(X_train)/batch_size):.6f}, Val Loss: {val_loss.item():.6f}")
-
-        print("\n--- Model Training Complete ---")
-        # Save placeholder for future integration
-        torch.save(model.state_dict(), "transformer_model.pth")
-        print("Model weights saved to transformer_model.pth")
+    train_generalized_model(ticker_to_train)

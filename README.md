@@ -8,9 +8,9 @@ A transformer-based model for predicting continuous price values from sequential
 - Kalman filter implementation for signal smoothing
 
 ## Usage
-Run the training script:
+Run the training script with a yfinance ticker (e.g., AAPL, GC=F for Gold, BTC-USD):
 ```bash
-python train_transformer.py
+python train_transformer.py AAPL
 ```
 
 ## Data
