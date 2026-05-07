@@ -120,10 +120,11 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     ax2.set_xlabel("Date", fontsize=12)
     
     plt.tight_layout()
-    plt.savefig(f"{ticker}_performance.png", dpi=300)
-    print(f"Comprehensive performance plot saved to {ticker}_performance.png")
+    plt.savefig(f"{ticker}_forward_test.png", dpi=300)
+    print(f"Comprehensive performance plot saved to {ticker}_forward_test.png")
 
 if __name__ == "__main__":
     import torch.optim as optim
     # Bitcoin is notoriously hard to predict due to high volatility and lack of traditional fundamentals
     run_evaluation("BTC-USD")
+    run_evaluation("ETH-USD")
