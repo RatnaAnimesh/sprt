@@ -22,18 +22,12 @@ Evaluation on out-of-sample data for high-volatility asset.
 
 ### Bitcoin (BTC-USD)
 
-- Directional Accuracy: 50.34%
+- Directional Accuracy: 54.79%
 - Strategy Cumulative Return: 1.10x
-- Buy & Hold Return: 0.90x
+- Buy & Hold Return: 0.88x
 
-![Bitcoin Performance](BTC-USD_performance.png)
+![Bitcoin Forward Test](BTC-USD_forward_test.png)
 
-### Ethereum (ETH-USD)
-- Directional Accuracy: 46.94%
-- Strategy Cumulative Return: 0.92x
-- Buy & Hold Return: 0.76x
-
-![Ethereum Performance](ETH-USD_performance.png)
 
 ## Data
 
