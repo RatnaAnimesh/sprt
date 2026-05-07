@@ -1,6 +1,6 @@
 # Sequential Price Regression Transformer
 
-A transformer-based model for predicting continuous price values from sequential market data.
+A transformer-based model for predicting continuous price values from sequential market data. Originally meant for IMC Prosperity 4.
 
 ## Features
 - Sequential price prediction using transformer architecture
