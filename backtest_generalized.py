@@ -104,24 +104,35 @@ def run_evaluation(ticker="BTC-USD", lookback=30):
 
     # --- Plotting with Seaborn ---
     sns.set_theme(style="darkgrid")
-    plt.figure(figsize=(14, 7))
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 12), sharex=True)
     
+    # 1. Price Plot
     plot_df = pd.DataFrame({
         'Date': dates,
         'Actual': y_test_actual,
         'Predicted': preds
     })
+    sns.lineplot(data=plot_df, x='Date', y='Actual', label='Actual Price', linewidth=2, ax=ax1)
+    sns.lineplot(data=plot_df, x='Date', y='Predicted', label='Predicted Price', linestyle='--', alpha=0.8, ax=ax1)
+    ax1.set_title(f"Price Prediction Forward Test: {ticker}", fontsize=16)
+    ax1.set_ylabel("Price (USD)", fontsize=12)
     
-    sns.lineplot(data=plot_df, x='Date', y='Actual', label='Actual Price', linewidth=2)
-    sns.lineplot(data=plot_df, x='Date', y='Predicted', label='Predicted Price', linestyle='--', alpha=0.8)
+    # 2. Cumulative Return Plot
+    # Returns aligned with dates[1:]
+    return_df = pd.DataFrame({
+        'Date': dates[1:],
+        'Strategy': cum_strat,
+        'Buy & Hold': cum_bh
+    })
+    sns.lineplot(data=return_df, x='Date', y='Strategy', label='Model Strategy', linewidth=2, color='green', ax=ax2)
+    sns.lineplot(data=return_df, x='Date', y='Buy & Hold', label='Buy & Hold', linewidth=2, color='gray', alpha=0.6, ax=ax2)
+    ax2.set_title(f"Cumulative Return Comparison", fontsize=16)
+    ax2.set_ylabel("Growth (1.0 = Start)", fontsize=12)
+    ax2.set_xlabel("Date", fontsize=12)
     
-    plt.title(f"Forward Test Evaluation: {ticker}", fontsize=16)
-    plt.xlabel("Date", fontsize=12)
-    plt.ylabel("Price (USD)", fontsize=12)
-    plt.legend()
     plt.tight_layout()
-    plt.savefig(f"{ticker}_forward_test.png", dpi=300)
-    print(f"Enhanced seaborn plot saved to {ticker}_forward_test.png")
+    plt.savefig(f"{ticker}_performance.png", dpi=300)
+    print(f"Comprehensive performance plot saved to {ticker}_performance.png")
 
 if __name__ == "__main__":
     import torch.optim as optim
