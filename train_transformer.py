@@ -7,6 +7,42 @@ import pandas as pd
 from torch.utils.data import DataLoader, Dataset
 import math
 import os
+import nltk
+from nltk.sentiment.vader import SentimentIntensityAnalyzer
+
+# Initialize VADER
+nltk.download('vader_lexicon', quiet=True)
+
+# --- Sentiment Dynamics Engine ---
+class SentimentEngine:
+    def __init__(self, half_life=3, polar_threshold=0.6):
+        self.sia = SentimentIntensityAnalyzer()
+        self.stable_lambda = -np.log(0.5) / half_life
+        self.polar_threshold = polar_threshold
+        self.state = 0.0
+
+    def process_headlines(self, headlines):
+        """
+        Implements: S_t = S_{t-1} * exp(-lambda)
+        If news is highly polarizing, lambda becomes very high (flush memory).
+        """
+        if not headlines:
+            self.state *= np.exp(-self.stable_lambda)
+            return self.state
+            
+        daily_scores = [self.sia.polarity_scores(h)['compound'] for h in headlines]
+        daily_avg = np.mean(daily_scores)
+        
+        if abs(daily_avg) > self.polar_threshold:
+            # High polarization: Flush old sentiment, adopt new signal
+            self.state = daily_avg
+        else:
+            # Normal decay + incremental update
+            self.state = self.state * np.exp(-self.stable_lambda) + daily_avg
+            
+        # Clip to [-1, 1]
+        self.state = max(-1.0, min(1.0, self.state))
+        return self.state
 
 # --- Reversible Instance Normalization (RevIN) ---
 class RevIN(nn.Module):
@@ -49,8 +85,9 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         return x + self.pe[:, :x.size(1), :]
 
+# --- Multi-Horizon Log-Return Transformer ---
 class MultiHorizonTransformer(nn.Module):
-    def __init__(self, input_dim, lookback, patch_size=8, d_model=128, nhead=8, num_layers=8, dropout=0.1):
+    def __init__(self, input_dim=6, lookback=64, patch_size=8, d_model=128, nhead=8, num_layers=8, dropout=0.1):
         """
         PatchTST-inspired Transformer using RevIN and local patching.
         """
@@ -106,9 +143,29 @@ class MultiHorizonDataset(Dataset):
         if df.empty:
             raise ValueError(f"No data for {ticker}")
         self.data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
+        
+        self.data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
+        
+        # --- Sentiment Calculation (Strict yfinance News) ---
+        # Note: yfinance only provides current news. Historical sentiment for backtesting 
+        # is limited to available API history.
+        engine = SentimentEngine()
+        sentiments = np.zeros(len(self.data))
+        
+        # For the current day (last row), we can pull real news
+        try:
+            tkr = yf.Ticker(ticker)
+            headlines = [n['content']['title'] for n in tkr.news if 'content' in n]
+            current_sent = engine.process_headlines(headlines)
+            sentiments[-1] = current_sent
+        except:
+            pass
+            
+        # Append sentiment as 6th column
+        self.data = np.column_stack((self.data, sentiments.astype(np.float32)))
 
     def __len__(self):
-        return len(self.data) - self.lookback - 14 # buffer for horizons
+        return len(self.data) - self.lookback - 14
 
     def __getitem__(self, idx):
         x = self.data[idx:idx+self.lookback]
@@ -126,7 +183,7 @@ def train_model(ticker="BTC-USD", lookback=64, epochs=1000):
     dataset = MultiHorizonDataset(ticker, lookback=lookback)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
-    model = MultiHorizonTransformer(input_dim=5, lookback=lookback)
+    model = MultiHorizonTransformer(input_dim=6, lookback=lookback)
     criterion = nn.HuberLoss() 
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     

@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import yfinance as yf
 import pandas as pd
-from train_transformer import MultiHorizonTransformer, MultiHorizonDataset
+from train_transformer import MultiHorizonTransformer, MultiHorizonDataset, SentimentEngine
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -21,7 +21,21 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
         return
 
     # 2. Prepare Data
-    data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
+    data_price = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
+    
+    # --- Real Sentiment Feature (Current yfinance News Only) ---
+    # Historical news is unavailable via yfinance; initializing sentiment state as 0.
+    # The architecture remains 6-dimensional to support live real-time inference.
+    sentiment_feature = np.zeros(len(data_price))
+    try:
+        tkr = yf.Ticker(ticker)
+        headlines = [n['content']['title'] for n in tkr.news if 'content' in n]
+        engine = SentimentEngine()
+        sentiment_feature[-1] = engine.process_headlines(headlines)
+    except:
+        pass
+    
+    data = np.column_stack((data_price, sentiment_feature.astype(np.float32)))
     
     # Split into Train (80%) and Test (20%) - Sequential split for time series
     split_idx = int(len(data) * 0.8)
@@ -44,7 +58,7 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     X_train = torch.tensor(np.array(X_train), dtype=torch.float32)
     y_train = torch.tensor(np.array(y_train), dtype=torch.float32)
     
-    model = MultiHorizonTransformer(input_dim=5, lookback=lookback)
+    model = MultiHorizonTransformer(input_dim=6, lookback=lookback)
     criterion = nn.HuberLoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
@@ -133,6 +147,27 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
 
 if __name__ == "__main__":
     import torch.optim as optim
-    # Bitcoin is notoriously hard to predict due to high volatility and lack of traditional fundamentals
     run_evaluation("BTC-USD")
     run_evaluation("ETH-USD")
+    
+    # --- LIVE SENTIMENT PREDICTION HOOK ---
+    print("\n" + "="*30)
+    print("LIVE REAL-TIME SENTIMENT PREDICTION")
+    print("="*30)
+    for tkr in ["BTC-USD", "ETH-USD"]:
+        ticker = yf.Ticker(tkr)
+        # yfinance news structure: list of dicts with 'content' -> 'title'
+        headlines = []
+        if ticker.news:
+            for n in ticker.news:
+                if 'content' in n and 'title' in n['content']:
+                    headlines.append(n['content']['title'])
+        
+        engine = SentimentEngine()
+        score = engine.process_headlines(headlines)
+        print(f"\nAsset: {tkr}")
+        print(f"Recent Headlines Found: {len(headlines)}")
+        print(f"Neural Sentiment State: {score:.4f} " + (" [POLARIZED RESET]" if abs(score) > 0.6 else " [STABLE DECAY]"))
+        if headlines: 
+            print(f"Latest Impact Headline: {headlines[0]}")
+

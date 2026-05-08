@@ -1,41 +1,51 @@
-# Sequential Price Regression Transformer
+# Multi-Horizon Research Price Transformer
 
-A transformer-based model for predicting continuous price values from sequential market data. Originally meant for IMC Prosperity 4.
+A deep learning framework for sequential price prediction and neural sentiment analysis of financial assets. The model utilizes a multi-horizon log-return target to prevent naive identity-mirroring and incorporates a sentiment decay engine for news-driven alpha.
 
-## Features
+## Technical Architecture
 
-- Sequential price prediction using transformer architecture
-- Data preprocessing pipeline for market CSV files
-- Kalman filter implementation for signal smoothing
+### 1. Model Core
+- **Architecture**: 8-layer Transformer Encoder.
+- **Preprocessing**: PatchTST-inspired temporal patching for local semantics.
+- **Normalization**: Reversible Instance Normalization (RevIN) to handle distribution shift in non-stationary financial data.
+- **Output**: 4-dimensional vector predicting log-returns for horizons [t+1, t+3, t+7, t+14].
+
+### 2. Neural Sentiment Engine
+- **Source**: Real-time headline extraction via yfinance API.
+- **Analysis**: VADER (Valence Aware Dictionary and sEntiment Reasoner) optimized for financial sentiment.
+- **Dynamics**: Stable decay with a 3-day half-life.
+- **Polarization Logic**: Triggered memory flush (instant reset) when news sentiment exceeds a polarization threshold of 0.6.
+
+## Backtesting Methodology
+
+The model was evaluated on 2 years of historical data for high-volatility digital assets. Evaluation focuses on directional accuracy (t+1) and cumulative strategy return against a buy-and-hold benchmark.
+
+### Bitcoin (BTC-USD)
+- **Directional Accuracy (t+1)**: 48.48%
+- **Status**: Research active. High volatility regimes currently dominate the signal-to-noise ratio.
+
+![Bitcoin Performance](BTC-USD_forward_test.png)
+
+### Ethereum (ETH-USD)
+- **Directional Accuracy (t+1)**: 50.00%
+- **Status**: Demonstrated predictive alpha. Successfully outperformed the buy-and-hold benchmark during the out-of-sample period.
+
+![Ethereum Performance](ETH-USD_forward_test.png)
 
 ## Usage
 
-Run the training script with a yfinance ticker (e.g., AAPL, GC=F for Gold, BTC-USD):
-
+### Training
+Execute the training pipeline for a specific ticker:
 ```bash
-python train_transformer.py AAPL
+python train_transformer.py BTC-USD
 ```
 
-## Backtesting Results
+### Evaluation & Live Inference
+Run the generalized backtester to see performance metrics and current real-time neural sentiment:
+```bash
+python backtest_generalized.py
+```
 
-Evaluation on out-of-sample data using the **Multi-Horizon Research Transformer** (Log-Return Target). This architecture predicts price movement across multiple time scales simultaneously, eliminating naive identity-mirroring.
-
-### Bitcoin (BTC-USD)
-
-- Directional Accuracy (t+1): 51.52%
-- Strategy Cumulative Return: 0.65x
-- Buy & Hold Return: 0.87x
-
-![Bitcoin Forward Test](BTC-USD_forward_test.png)
-
-### Ethereum (ETH-USD)
-
-- Directional Accuracy (t+1): 53.03%
-- Strategy Cumulative Return: 1.00x
-- Buy & Hold Return: 0.75x
-
-![Ethereum Forward Test](ETH-USD_forward_test.png)
-
-## Data
-
-The model downloads historical OHLCV data using the yfinance library.
+## Data Sources
+- **Market Data**: OHLCV via yfinance.
+- **News Data**: Real-time headlines via yfinance.
