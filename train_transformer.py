@@ -49,12 +49,12 @@ class PositionalEncoding(nn.Module):
     def forward(self, x):
         return x + self.pe[:, :x.size(1), :]
 
-class ResearchPriceTransformer(nn.Module):
-    def __init__(self, input_dim, lookback, patch_size=8, d_model=128, nhead=8, num_layers=4, dropout=0.1):
+class MultiHorizonTransformer(nn.Module):
+    def __init__(self, input_dim, lookback, patch_size=8, d_model=128, nhead=8, num_layers=8, dropout=0.1):
         """
         PatchTST-inspired Transformer using RevIN and local patching.
         """
-        super(ResearchPriceTransformer, self).__init__()
+        super(MultiHorizonTransformer, self).__init__()
         self.patch_size = patch_size
         self.num_patches = lookback // patch_size
         
@@ -71,11 +71,11 @@ class ResearchPriceTransformer(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # Decoder for target (t+1)
+        # Multi-Horizon Decoder ([t+1, t+3, t+7, t+14])
         self.decoder = nn.Sequential(
             nn.Linear(d_model, 64),
             nn.GELU(),
-            nn.Linear(64, 1) # Predicting Close price
+            nn.Linear(64, 4) 
         )
 
     def forward(self, x):
@@ -96,41 +96,38 @@ class ResearchPriceTransformer(nn.Module):
         # 4. Decode
         out = self.decoder(x[:, -1, :]) # Use the last patch representation
         
-        # 5. Denormalize target (using RevIN stats from the 'Close' feature)
-        # Note: Denorm expects same shape as original input or specific stats.
-        # We simplify here by manually denormalizing the target Close price.
-        # Close is index 3 in OHLCV
-        mean_close = self.revin.mean[:, :, 3]
-        std_close = self.revin.stdev[:, :, 3]
-        out = out * std_close + mean_close
-        
         return out
 
 # --- Data Handling ---
-class StockDataset(Dataset):
+class MultiHorizonDataset(Dataset):
     def __init__(self, ticker, lookback=64, period="2y", interval="1d"):
-        # lookback must be divisible by patch_size (8)
         self.lookback = lookback
         df = yf.download(ticker, period=period, interval=interval)
         if df.empty:
             raise ValueError(f"No data for {ticker}")
-        
         self.data = df[['Open', 'High', 'Low', 'Close', 'Volume']].values.astype(np.float32)
 
     def __len__(self):
-        return len(self.data) - self.lookback
+        return len(self.data) - self.lookback - 14 # buffer for horizons
 
     def __getitem__(self, idx):
         x = self.data[idx:idx+self.lookback]
-        y = self.data[idx+self.lookback, 3] # Close price
-        return torch.tensor(x), torch.tensor(y).view(-1)
+        c = self.data[idx+self.lookback-1, 3] # current close
+        
+        # Log-returns for t+1, t+3, t+7, t+14
+        y1 = np.log(self.data[idx+self.lookback, 3] / c)
+        y3 = np.log(self.data[idx+self.lookback+2, 3] / c)
+        y7 = np.log(self.data[idx+self.lookback+6, 3] / c)
+        y14 = np.log(self.data[idx+self.lookback+13, 3] / c)
+        
+        return torch.tensor(x), torch.tensor([y1, y3, y7, y14])
 
-def train_model(ticker="BTC-USD", lookback=64, epochs=50):
-    dataset = StockDataset(ticker, lookback=lookback)
+def train_model(ticker="BTC-USD", lookback=64, epochs=1000):
+    dataset = MultiHorizonDataset(ticker, lookback=lookback)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
-    model = ResearchPriceTransformer(input_dim=5, lookback=lookback)
-    criterion = nn.HuberLoss()
+    model = MultiHorizonTransformer(input_dim=5, lookback=lookback)
+    criterion = nn.HuberLoss() 
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
     print(f"Training SOTA Research Transformer on {ticker}...")

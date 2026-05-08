@@ -18,21 +18,21 @@ python train_transformer.py AAPL
 
 ## Backtesting Results
 
-Evaluation on out-of-sample data for high-volatility asset.
+Evaluation on out-of-sample data using the **Multi-Horizon Research Transformer** (Log-Return Target). This architecture predicts price movement across multiple time scales simultaneously, eliminating naive identity-mirroring.
 
 ### Bitcoin (BTC-USD)
 
-- Directional Accuracy: 50.68%
-- Strategy Cumulative Return: 0.82x
-- Buy & Hold Return: 0.88x
+- Directional Accuracy (t+1): 51.52%
+- Strategy Cumulative Return: 0.65x
+- Buy & Hold Return: 0.87x
 
 ![Bitcoin Forward Test](BTC-USD_forward_test.png)
 
 ### Ethereum (ETH-USD)
 
-- Directional Accuracy: 50.68%
-- Strategy Cumulative Return: 0.94x
-- Buy & Hold Return: 0.74x
+- Directional Accuracy (t+1): 53.03%
+- Strategy Cumulative Return: 1.00x
+- Buy & Hold Return: 0.75x
 
 ![Ethereum Forward Test](ETH-USD_forward_test.png)
 

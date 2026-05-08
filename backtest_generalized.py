@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import yfinance as yf
 import pandas as pd
-from train_transformer import ResearchPriceTransformer, StockDataset
+from train_transformer import MultiHorizonTransformer, MultiHorizonDataset
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -31,27 +31,33 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     # --- Training Phase ---
     print(f"Training on historical data ({len(train_data)} points)...")
     X_train, y_train = [], []
-    for i in range(len(train_data) - lookback):
+    for i in range(len(train_data) - lookback - 14):
         X_train.append(train_data[i:i+lookback])
-        y_train.append(train_data[i+lookback, 3])
+        # Current close for return calculation
+        c = train_data[i+lookback-1, 3]
+        y1 = np.log(train_data[i+lookback, 3] / c)
+        y3 = np.log(train_data[i+lookback+2, 3] / c)
+        y7 = np.log(train_data[i+lookback+6, 3] / c)
+        y14 = np.log(train_data[i+lookback+13, 3] / c)
+        y_train.append([y1, y3, y7, y14])
     
     X_train = torch.tensor(np.array(X_train), dtype=torch.float32)
-    y_train = torch.tensor(np.array(y_train), dtype=torch.float32).view(-1, 1)
+    y_train = torch.tensor(np.array(y_train), dtype=torch.float32)
     
-    model = ResearchPriceTransformer(input_dim=5, lookback=lookback)
+    model = MultiHorizonTransformer(input_dim=5, lookback=lookback)
     criterion = nn.HuberLoss()
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
     # Training loop
-    for epoch in range(50):
+    for epoch in range(100): # Increased slightly for multi-horizon
         model.train()
         optimizer.zero_grad()
         pred = model(X_train)
         loss = criterion(pred, y_train)
         loss.backward()
         optimizer.step()
-        if (epoch+1) % 10 == 0:
-            print(f"Epoch {epoch+1:02d} | Loss: {loss.item():.6f}")
+        if (epoch+1) % 20 == 0:
+            print(f"Epoch {epoch+1:02d} | Multi-Horizon Loss: {loss.item():.6f}")
 
     # --- Testing Phase (Forward Test) ---
     print(f"\nForward testing on out-of-sample data ({len(data) - split_idx} points)...")
@@ -60,26 +66,28 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     
     test_dates = df.index[split_idx:]
     
-    for i in range(len(test_data) - lookback):
+    for i in range(len(test_data) - lookback - 14):
         X_test.append(test_data[i:i+lookback])
-        y_test_actual.append(test_data[i+lookback, 3])
+        y_test_actual.append(test_data[i+lookback, 3]) # Still track absolute price for plotting
         dates.append(test_dates[i])
         
     X_test = torch.tensor(np.array(X_test), dtype=torch.float32)
     
     with torch.no_grad():
-        preds = model(X_test).numpy().flatten()
+        preds_returns = model(X_test).numpy()
+        # Convert first horizon (t+1) return back to price for plotting
+        current_closes = np.array([test_data[i+lookback-1, 3] for i in range(len(preds_returns))])
+        preds = current_closes * np.exp(preds_returns[:, 0])
     
     y_test_actual = np.array(y_test_actual)
     
-    # --- Metrics ---
-    # Directional Accuracy: Did we correctly predict if price goes up or down relative to current?
-    current_prices = test_data[lookback-1:-1, 3]
+    # Directional Accuracy based on first horizon prediction
+    current_prices = np.array([test_data[i+lookback-1, 3] for i in range(len(preds))])
     actual_dir = np.sign(y_test_actual - current_prices)
-    pred_dir = np.sign(preds - current_prices)
+    pred_dir = np.sign(preds_returns[:, 0]) # Positive return means up
     dir_acc = np.mean(actual_dir == pred_dir)
     
-    print(f"\nDirectional Accuracy: {dir_acc:.2%}")
+    print(f"\nDirectional Accuracy (t+1): {dir_acc:.2%}")
     
     # Simple Strategy PnL: Long if pred > current, else Short (normalized to 1.0 start)
     returns = (y_test_actual[1:] - y_test_actual[:-1]) / y_test_actual[:-1]
