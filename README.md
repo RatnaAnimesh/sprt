@@ -24,13 +24,9 @@ The model was evaluated on 2 years of historical data for high-volatility digita
 - **Directional Accuracy (t+1)**: 48.48%
 - **Status**: Research active. High volatility regimes currently dominate the signal-to-noise ratio.
 
-![Bitcoin Performance](BTC-USD_forward_test.png)
-
 ### Ethereum (ETH-USD)
 - **Directional Accuracy (t+1)**: 50.00%
 - **Status**: Demonstrated predictive alpha. Successfully outperformed the buy-and-hold benchmark during the out-of-sample period.
-
-![Ethereum Performance](ETH-USD_forward_test.png)
 
 ## Usage
 
