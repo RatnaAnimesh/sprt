@@ -3,7 +3,7 @@ import torch.nn as nn
 import numpy as np
 import yfinance as yf
 import pandas as pd
-from train_transformer import MultiHorizonTransformer, MultiHorizonDataset, SentimentEngine
+from train_transformer import MultiHorizonTransformer, MultiHorizonDataset, SentimentEngine, DPMLoss
 import seaborn as sns
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -59,11 +59,11 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     y_train = torch.tensor(np.array(y_train), dtype=torch.float32)
     
     model = MultiHorizonTransformer(input_dim=6, lookback=lookback)
-    criterion = nn.HuberLoss()
+    criterion = DPMLoss() # Breaking mirroring with momentum loss
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
     # Training loop
-    for epoch in range(100): # Increased slightly for multi-horizon
+    for epoch in range(200): # Increased slightly for multi-horizon
         model.train()
         optimizer.zero_grad()
         pred = model(X_train)
@@ -144,6 +144,16 @@ def run_evaluation(ticker="BTC-USD", lookback=64):
     plt.tight_layout()
     plt.savefig(f"{ticker}_forward_test.png", dpi=300)
     print(f"Comprehensive performance plot saved to {ticker}_forward_test.png")
+    
+    # --- Audit Export: Check for Mirroring ---
+    audit_df = pd.DataFrame({
+        'Date': dates,
+        'Actual_Price': y_test_actual,
+        'Predicted_Price': preds,
+        'Predicted_Return_t1': preds_returns[:, 0]
+    })
+    audit_df.to_csv(f"audit_results_{ticker}.csv", index=False)
+    print(f"Audit CSV saved to audit_results_{ticker}.csv")
 
 if __name__ == "__main__":
     import torch.optim as optim

@@ -44,6 +44,36 @@ class SentimentEngine:
         self.state = max(-1.0, min(1.0, self.state))
         return self.state
 
+# --- Differential Phase-Momentum (DPM) Loss ---
+class DPMLoss(nn.Module):
+    def __init__(self, alpha=1.0, beta=5.0, gamma=2.0):
+        """
+        alpha: Position Error (Huber)
+        beta: Velocity/Momentum Error (Gradient of returns)
+        gamma: Phase Coherence (Directional vector alignment)
+        """
+        super(DPMLoss, self).__init__()
+        self.alpha = alpha
+        self.beta = beta
+        self.gamma = gamma
+        self.huber = nn.HuberLoss()
+
+    def forward(self, pred, target):
+        # 1. Position Loss (Basic distance)
+        pos_loss = self.huber(pred, target)
+        
+        # 2. Momentum Loss (Velocity)
+        # Error in the 'acceleration' of the trend across horizons
+        v_pred = pred[:, 1:] - pred[:, :-1]
+        v_target = target[:, 1:] - target[:, :-1]
+        vel_loss = torch.mean(torch.abs(v_pred - v_target))
+        
+        # 3. Phase Loss (Directional alignment)
+        cos_sim = torch.nn.functional.cosine_similarity(pred, target, dim=1)
+        phase_loss = torch.mean(1 - cos_sim)
+        
+        return self.alpha * pos_loss + self.beta * vel_loss + self.gamma * phase_loss
+
 # --- Reversible Instance Normalization (RevIN) ---
 class RevIN(nn.Module):
     def __init__(self, num_features, eps=1e-5, affine=True):
@@ -184,7 +214,7 @@ def train_model(ticker="BTC-USD", lookback=64, epochs=1000):
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
     
     model = MultiHorizonTransformer(input_dim=6, lookback=lookback)
-    criterion = nn.HuberLoss() 
+    criterion = DPMLoss() # Using DPM Loss to break mirroring
     optimizer = optim.AdamW(model.parameters(), lr=0.0005, weight_decay=0.01)
     
     print(f"Training SOTA Research Transformer on {ticker}...")

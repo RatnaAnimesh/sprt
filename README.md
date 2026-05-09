@@ -21,14 +21,14 @@ A deep learning framework for sequential price prediction and neural sentiment a
 The model was evaluated on 2 years of historical data for high-volatility digital assets. Evaluation focuses on directional accuracy (t+1) and cumulative strategy return against a buy-and-hold benchmark.
 
 ### Bitcoin (BTC-USD)
-- **Directional Accuracy (t+1)**: 48.48%
-- **Status**: Research active. High volatility regimes currently dominate the signal-to-noise ratio.
+- **Directional Accuracy (t+1)**: 49.24%
+- **Status**: Research active. Momentum-based optimization has reduced identity-lagging.
 
 ![Bitcoin Performance](BTC-USD_forward_test.png)
 
 ### Ethereum (ETH-USD)
-- **Directional Accuracy (t+1)**: 50.00%
-- **Status**: Demonstrated predictive alpha. Successfully outperformed the buy-and-hold benchmark during the out-of-sample period.
+- **Directional Accuracy (t+1)**: 51.52%
+- **Status**: Predictive alpha identified. Significant outperformance (1.45x) against buy-and-hold (0.76x) during the test period.
 
 ![Ethereum Performance](ETH-USD_forward_test.png)
 
